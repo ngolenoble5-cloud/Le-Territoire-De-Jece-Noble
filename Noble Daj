@@ -1,0 +1,446 @@
+# Le Territoire De Jece Noble — V3 (construction)
+
+Jeu de quiz francophone en arène multijoueur, interface rouge/noir, serveur Node.js + Socket.IO et classements globaux.
+
+## Règles implémentées dans cette version
+- 50 catégories officielles ; une catégorie est tirée au hasard à chaque manche.
+- Départ automatique dès que 2 joueurs sont présents dans une salle.
+- 20 questions par manche, 20 secondes par question, quatre réponses A/B/C/D.
+- Points de base = seconde écoulée (ex. réponse correcte à la 18e seconde = 18 points). Bonus par réponse correcte : +5 entre la 15e et avant la 17e seconde ; +10 de la 17e à la 20e seconde. Mauvaise réponse ou absence de réponse = 0.
+- Bonus de manche : +20 si au moins 10 bonnes réponses ont été données en moins de 15 s chacune ; sinon +30 si au moins 10 ont été données en moins de 17 s chacune ; +50 pour 20/20. Les deux bonus de série rapide ne se cumulent pas entre eux ; le bonus parfait s'ajoute.
+- Vainqueur de manche : meilleur score ; en cas d'égalité, temps cumulé le plus faible sur les bonnes réponses.
+- Proclamation du vainqueur, pause de 6,5 s, puis nouvelle manche automatique.
+- Classements général et quotidien ; persistance des scores via PostgreSQL.
+- Voix de l'animateur activable/désactivable dans le navigateur.
+
+## Dépendances indispensables
+Node.js 18+ et une base PostgreSQL pour sauvegarder durablement les scores. Configure côté serveur `OPENAI_API_KEY` pour la génération des questions dans les 50 catégories et `DATABASE_URL` pour les classements persistants. Sans clé IA, le serveur refuse de démarrer une manche complète : la banque de secours n'est pas encore assez grande pour 20 questions uniques dans chaque catégorie.
+
+## Démarrage local
+```bash
+npm install
+npm start
+```
+Puis ouvre `http://localhost:3000`. Vérifie la configuration sur `http://localhost:3000/health`.
+
+## Déploiement Render
+Le fichier `render.yaml` contient le service Node. Ajoute les variables secrètes `OPENAI_API_KEY` et `DATABASE_URL` dans le tableau de bord Render. GitHub Pages seul ne peut pas exécuter le serveur Node/Socket.IO.
+
+## Fichiers
+- `index.html` : interface du jeu
+- `multiplayer-client.js` : interface de l'arène en direct
+- `server.js` : règles, chronomètre, calcul des scores, questions IA, classements
+- `render.yaml` : configuration d'hébergement
+- `INSTALLATION.txt` : étapes de configuration
+
+## Statut honnête
+Cette archive contient les modifications V3 préparées et les vérifications syntaxiques JavaScript. Elle n'a pas été déployée sur Render ni reliée automatiquement à GitHub ; la connexion PostgreSQL, la clé IA, les tests multijoueurs en ligne et la publication restent à effectuer.
+/* Interface multijoueur ajoutée au prototype existant. Le serveur doit servir index.html. */
+(() => {
+  const socket = io({reconnection:true,reconnectionAttempts:Infinity,reconnectionDelay:1000,reconnectionDelayMax:10000,timeout:20000});
+  let playerId = localStorage.getItem('tj-player-id');
+  if (!playerId) { playerId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'tj_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2); localStorage.setItem('tj-player-id',playerId); }
+  let lastGlobalBoards={general:[],daily:[]};
+  let selectedBoardType='general';
+  const style = document.createElement('style');
+  style.textContent = `#mp-section .mp-field{width:100%;background:#160f25;color:#fff;border:1px solid #654b83;border-radius:12px;padding:13px;margin:5px 0 10px}#mp-section .mp-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}#mp-section .mp-small{font-size:12px;color:var(--muted)}#mp-section .mp-options{display:grid;gap:9px;margin:14px 0}#mp-section .mp-option{text-align:left;padding:14px;border-radius:12px;background:#ffffff08;border:1px solid #47315e;color:white;font-weight:700}#mp-section .mp-option:disabled{opacity:.65}#mp-section .mp-option.correct{border-color:var(--green);background:#72e6b01b}#mp-section .mp-status{color:var(--gold);font-weight:800;margin:10px 0;white-space:pre-line}#mp-section .mp-player{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid #ffffff10;font-size:13px}#mp-section .mp-player:last-child{border:0}#mp-section .mp-question{font-size:22px;line-height:1.35;margin:16px 0}#mp-section .mp-code{font-size:28px;letter-spacing:.16em;color:var(--gold);font-weight:900}#mp-section .mp-round-result{background:#351014;border:1px solid #b92b3b;border-radius:12px;padding:12px;margin-top:12px;font-weight:800}#mp-section .mp-audio{display:flex;align-items:center;gap:8px;margin:12px 0;font-size:13px;color:var(--muted)}`;
+  document.head.appendChild(style);
+  const heroActions = document.querySelector('#home .hero .actions');
+  if (heroActions) {
+    const b=document.createElement('button'); b.className='btn secondary'; b.textContent='👥 Entrer dans l’arène'; b.onclick=()=>showMultiplayer(); heroActions.appendChild(b);
+  }
+  const main=document.querySelector('main');
+  const section=document.createElement('section'); section.id='mp-section'; section.className='view';
+  section.innerHTML=`<button class="back" id="mp-back">← Retour à l'accueil</button><div class="eyebrow">⚔️ Arène connectée</div><h1>Jouez ensemble</h1><p class="muted">Crée une salle et partage son code. Tous les joueurs répondent à la même question au même moment. Les points et bonus alimentent le classement général et quotidien. Le départ est automatique dès que 2 joueurs sont présents.</p>
+  <div class="panel" id="mp-lobby"><label for="mp-name">Ton pseudo</label><input class="mp-field" id="mp-name" maxlength="24" placeholder="Ex. Jece Noble" value=""><div class="notice">🎲 La catégorie est tirée au hasard à chaque manche parmi les 50 catégories officielles. Chaque manche compte 20 questions de 20 secondes.</div><label class="mp-audio"><input type="checkbox" id="mp-audio" checked> Activer la voix de l’animateur</label><div class="mp-grid"><button class="btn primary" id="mp-create">♛ Créer une salle</button><button class="btn secondary" id="mp-join">Rejoindre une salle</button></div><div id="mp-join-area" hidden><label for="mp-room-code">Code de la salle</label><input class="mp-field" id="mp-room-code" maxlength="5" placeholder="ABCDE" autocapitalize="characters"></div><div id="mp-status" class="mp-status">Connexion au serveur…</div></div>
+  <div class="panel" id="mp-room" hidden><div class="mp-small">CODE À PARTAGER</div><div id="mp-code" class="mp-code">-----</div><div id="mp-category-label" class="mp-small"></div><div id="mp-player-list" style="margin-top:12px"></div><div class="mp-status" id="mp-game-status">En attente des joueurs…</div><div id="mp-play-area" hidden><div class="mp-small" id="mp-round"></div><div class="timer"><div id="mp-bar"></div></div><div class="mp-small"><span id="mp-seconds">20</span> secondes restantes · même question pour tous</div><div id="mp-question" class="mp-question"></div><div id="mp-options" class="mp-options"></div><div id="mp-feedback" class="feedback"></div></div><div class="actions"><div id="mp-round-result" class="mp-round-result" hidden></div><button class="btn primary" id="mp-start" hidden>▶ Lancement automatique…</button><button class="btn secondary" id="mp-leave">Quitter la salle</button></div></div>
+  <div class="notice">Les questions partagées et les scores en direct nécessitent que ce site soit hébergé avec le serveur multijoueur. Pour des questions presque illimitées, configure une clé API IA côté serveur — jamais dans le navigateur.</div>`;
+  main.appendChild(section);
+  const $ = id => document.getElementById(id);
+  let isHost=false, currentQuestion=null, answered=false, timerLoop=null, currentCode='';
+  $('mp-back').onclick=()=>show('home');
+  function showMultiplayer(){show('home');document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id==='mp-section'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));window.scrollTo(0,0);}
+  window.openMultiplayer=showMultiplayer;
+  function speak(text){if(!$('mp-audio')?.checked||!('speechSynthesis' in window))return;window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);u.lang='fr-FR';u.rate=1.05;window.speechSynthesis.speak(u);}
+  $('mp-create').onclick=()=>{const name=$('mp-name').value.trim();if(!name){status('Entre ton pseudo avant de créer la salle.');return;}socket.emit('create-room',{name,playerId});};
+  $('mp-join').onclick=()=>{if($('mp-join-area').hidden){$('mp-join-area').hidden=false;$('mp-join').textContent='Confirmer le code';return;}const name=$('mp-name').value.trim(),code=$('mp-room-code').value.trim().toUpperCase();if(!name||code.length!==5){status('Entre ton pseudo et le code à 5 caractères.');return;}socket.emit('join-room',{name,code,playerId});};
+  $('mp-room-code').addEventListener('input',e=>e.target.value=e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,5));
+  $('mp-start').onclick=()=>{};
+  $('mp-leave').onclick=()=>{socket.emit('leave-room');clearInterval(timerLoop);$('mp-room').hidden=true;$('mp-lobby').hidden=false;currentCode='';currentQuestion=null;status('Tu as quitté la salle.');};
+  function status(msg){$('mp-status').textContent=msg;}
+  function escapeText(s){return String(s??'');}
+  function renderPlayers(players){const box=$('mp-player-list');box.replaceChildren();players.forEach((p,i)=>{const row=document.createElement('div');row.className='mp-player';const name=document.createElement('span');name.textContent=(i===0?'♛ ':'')+p.name+(p.answered?' · a répondu':'');const score=document.createElement('b');score.textContent=p.score+' pt'+(p.score>1?'s':'');row.append(name,score);box.appendChild(row);});}
+  function openRoom(code,host){currentCode=code;isHost=host;$('mp-lobby').hidden=true;$('mp-room').hidden=false;$('mp-code').textContent=code;$('mp-start').hidden=!host;status('Salle connectée.');}
+  function renderGlobalBoard(type='general') {
+    const players=lastGlobalBoards[type]||[]; const target=$('leaderList'); if(!target)return;
+    target.replaceChildren();
+    if(!players.length){target.textContent='Aucun score enregistré pour le moment. Connecte-toi à une partie et réponds juste pour inaugurer le classement.';return;}
+    players.forEach((p,i)=>{const row=document.createElement('div');row.className='leader';const rank=document.createElement('div');rank.className='rank';rank.textContent=['🥇','🥈','🥉'][i]||'#'+(i+1);const avatar=document.createElement('div');avatar.className='avatar';avatar.textContent=(p.name||'?').slice(0,1).toUpperCase();const person=document.createElement('div');person.className='person';const name=document.createElement('b');name.textContent=p.name||'Joueur';const meta=document.createElement('small');meta.textContent=(p.correct_answers||0)+' bonne(s) réponse(s) enregistrée(s)';person.append(name,meta);const score=document.createElement('div');score.className='score';score.textContent=(p.score||0)+' pts';row.append(rank,avatar,person,score);target.appendChild(row);});
+  }
+  async function fetchGlobalBoards(type='general') { try { const r=await fetch('/api/leaderboard?type='+type,{cache:'no-store'}); if(!r.ok)throw new Error('API indisponible');const data=await r.json();lastGlobalBoards[type]=data.players||[];if(type==='general'){const mini=$('mini');if(mini){mini.replaceChildren();lastGlobalBoards.general.slice(0,3).forEach((p,i)=>{const line=document.createElement('div');line.className='mp-player';const n=document.createElement('span');n.textContent=['🥇 ','🥈 ','🥉 '][i]+p.name;const s=document.createElement('b');s.textContent=p.score+' pts';line.append(n,s);mini.appendChild(line);});}}renderGlobalBoard(type);const notice=document.querySelector('#leaderboard .notice');if(notice)notice.textContent=data.persistent?'Classement connecté : les points sont sauvegardés et partagés entre tous les joueurs.':'Mode local temporaire : ajoute DATABASE_URL au serveur pour conserver le classement après un redémarrage.'; } catch(e) { const target=$('leaderList');if(target)target.textContent='Le classement connecté sera disponible lorsque le site sera déployé avec son serveur. '+e.message; } }
+  window.leaders=(type)=>{ selectedBoardType=type==='daily'?'daily':type==='game'?'game':'general'; if(type==='game' && currentCode){const target=$('leaderList');if(target){target.replaceChildren();[...document.querySelectorAll('#mp-player-list .mp-player')].forEach(el=>target.appendChild(el.cloneNode(true)));}return;}if(type==='game'){const target=$('leaderList');if(target)target.textContent='Pour voir le classement de partie, rejoins une salle multijoueur. Le classement général et quotidien reste disponible partout.';return;}fetchGlobalBoards(type==='daily'?'daily':'general'); };
+  socket.on('global-leaderboards',data=>{lastGlobalBoards.general=data.general||[];lastGlobalBoards.daily=data.daily||[];renderGlobalBoard(selectedBoardType==='daily'?'daily':'general');const mini=$('mini');if(mini){mini.replaceChildren();lastGlobalBoards.general.slice(0,3).forEach((p,i)=>{const line=document.createElement('div');line.className='mp-player';const n=document.createElement('span');n.textContent=['🥇 ','🥈 ','🥉 '][i]+p.name;const s=document.createElement('b');s.textContent=p.score+' pts';line.append(n,s);mini.appendChild(line);});}});
+  fetchGlobalBoards('general'); fetchGlobalBoards('daily');
+  socket.on('connect',()=>status('Connecté au serveur. Crée une salle ou rejoins tes amis.'));
+  socket.on('disconnect',()=>status('Connexion perdue. Le jeu tentera de se reconnecter automatiquement.'));
+  socket.on('room-created',d=>openRoom(d.code,!!d.host));
+  socket.on('room-joined',d=>openRoom(d.code,!!d.host));
+  socket.on('room-error',msg=>{status(msg);if(currentCode)$('mp-game-status').textContent=msg;});
+  socket.on('host-changed',id=>{isHost=socket.id===id;$('mp-start').hidden=!isHost;});
+  socket.on('room-state',state=>{if(state.code!==currentCode)return;renderPlayers(state.players);$('mp-category-label').textContent='Catégorie : '+state.category+' · '+state.playerCount+' joueur(s)';if(state.status==='lobby')$('mp-game-status').textContent='En attente de '+Math.max(0,2-state.playerCount)+' joueur(s) pour le départ automatique.';else if(state.status==='loading')$('mp-game-status').textContent='Préparation de la question…';else if(state.status==='playing')$('mp-game-status').textContent=state.answerCount+' / '+state.playerCount+' réponse(s) reçue(s).';else if(state.status==='review')$('mp-game-status').textContent='Réponse révélée. La manche continue…';else if(state.status==='round-result')$('mp-game-status').textContent='Manche terminée. Proclamation du vainqueur…';});
+  socket.on('new-question',q=>{currentQuestion=q;answered=false;$('mp-play-area').hidden=false;$('mp-start').hidden=true;$('mp-round').textContent='Manche '+q.round+' · Question '+q.number+' / '+q.total+' · '+q.category; $('mp-round-result').hidden=true;$('mp-question').textContent=q.question;$('mp-feedback').textContent='';$('mp-options').replaceChildren();q.options.forEach((opt,i)=>{const b=document.createElement('button');b.className='mp-option';b.textContent='ABCD'[i]+'. '+opt;b.onclick=()=>{if(answered)return;answered=true;socket.emit('submit-answer',{index:i});[...$('mp-options').children].forEach(x=>x.disabled=true);$('mp-feedback').textContent='Réponse envoyée. Attends le résultat commun…';};$('mp-options').appendChild(b);});clearInterval(timerLoop);const tick=()=>{const remaining=Math.max(0,Math.ceil((q.endsAt-Date.now())/1000));$('mp-seconds').textContent=remaining;$('mp-bar').style.width=(remaining/20*100)+'%';};tick();timerLoop=setInterval(tick,250);});
+  socket.on('answer-ack',d=>{$('mp-feedback').textContent=d.correct?'Bonne réponse ! +'+d.points+' points. '+(d.funnyLine||''):'Réponse enregistrée. '+(d.funnyLine||'Attends le résultat commun…');if(d.funnyLine)speak(d.funnyLine);});
+  socket.on('question-result',r=>{clearInterval(timerLoop);$('mp-feedback').textContent='Réponse correcte : '+r.correctAnswer+' — '+r.explanation;[...$('mp-options').children].forEach((b,i)=>{b.disabled=true;if(i===r.correctIndex)b.classList.add('correct');});$('mp-game-status').textContent='Question '+r.number+'/'+r.total+' terminée. La suite arrive automatiquement.';});
+  socket.on('round-start',r=>{const box=$('mp-round-result');box.hidden=false;box.textContent='🔥 MANCHE '+r.round+' — '+r.category.toUpperCase()+' — 20 QUESTIONS. Que le Territoire commence !';$('mp-game-status').textContent='Nouvelle manche : '+r.category;speak('Nouvelle manche. Catégorie '+r.category+'. Que le meilleur gagne !');});
+  socket.on('round-result',r=>{clearInterval(timerLoop);const box=$('mp-round-result');box.hidden=false;const winner=r.winner?('👑 VAINQUEUR : '+r.winner.name+' avec '+r.winner.score+' points !'):'Aucun vainqueur.';box.textContent='🏆 FIN DE LA MANCHE '+r.round+' — '+winner+' Prochaine manche dans '+r.nextRoundIn+' secondes.';$('mp-game-status').textContent='Manche terminée. Le classement général a été actualisé.';speak(r.winner?'Le Territoire a choisi son roi. Félicitations à '+r.winner.name+'.':'La manche est terminée.');});
+})();
+LE TERRITOIRE DE JECE NOBLE — V3
+Guide d’installation
+
+1. PRÉREQUIS
+- Node.js 18 ou supérieur
+- Projet PostgreSQL (par exemple Supabase) pour conserver les scores
+- Clé API OpenAI pour générer des questions dans les 50 catégories
+
+2. CONFIGURER LE SERVEUR
+À la racine du dossier, lance :
+  npm install
+  npm start
+
+Variables d’environnement nécessaires :
+- OPENAI_API_KEY : clé secrète pour la génération des questions
+- OPENAI_MODEL : optionnel, valeur recommandée gpt-4o-mini
+- DATABASE_URL : URL de connexion PostgreSQL
+- PGSSL : mettre `disable` uniquement si ton hébergeur n’exige pas SSL
+
+Ne place jamais ces clés dans index.html, multiplayer-client.js ou un dépôt public.
+
+3. DÉPLOIEMENT
+Le dépôt GitHub Pages sert uniquement les fichiers statiques. Pour le multijoueur en direct, déploie le dossier sur un hébergeur Node.js prenant en charge Socket.IO/WebSockets (Render par exemple). Dans Render : Build `npm install`, Start `npm start`, health check `/health`. Ajoute OPENAI_API_KEY et DATABASE_URL dans les variables secrètes du service.
+
+4. TESTS APRÈS DÉPLOIEMENT
+Ouvre /health sur l’URL du serveur. La réponse indique :
+- ok : serveur actif
+- aiEnabled : clé IA détectée
+- databaseEnabled : base de données prête
+- categories : nombre de catégories (attendu : 50)
+- questionsPerRound : 20
+- questionSeconds : 20
+- minimumPlayers : 2
+
+5. LANCER UNE PARTIE
+- Tous les joueurs ouvrent la même URL du service déployé.
+- Un joueur saisit son pseudo et crée une salle.
+- Il partage le code à 5 caractères.
+- Dès que le deuxième joueur rejoint, la manche démarre automatiquement.
+- La catégorie est tirée au hasard et la même question est affichée pour toute la salle.
+- Après 20 questions, le vainqueur est annoncé ; la manche suivante démarre automatiquement après une courte pause.
+
+6. RÈGLES DE POINTS
+Chaque bonne réponse rapporte le nombre de secondes écoulées au moment de la validation, plafonné à 20, avec +5 entre la 15e et avant la 17e seconde, ou +10 de la 17e à la 20e seconde. Une mauvaise réponse ou une absence de réponse rapporte 0. À la fin de la manche : +20 si au moins 10 bonnes réponses ont été données en moins de 15 secondes chacune ; sinon +30 si au moins 10 ont été données en moins de 17 secondes chacune ; +50 pour 20 bonnes réponses sur 20. Les deux bonus de rapidité ne se cumulent pas entre eux, mais le bonus parfait s’ajoute. En cas d’égalité de score, le joueur dont le temps cumulé de réponse correcte est le plus faible gagne.
+
+7. LIMITES À CE STADE
+- Cette V3 est un paquet de code préparé, pas une preuve de déploiement.
+- Sans OPENAI_API_KEY, le jeu ne lance pas de manche complète de 20 questions : la petite banque de secours n’est pas encore suffisante pour toutes les catégories.
+- La persistance exige une base PostgreSQL active.
+- Les questions IA doivent être contrôlées ; l’IA peut produire une erreur.
+- L’identifiant est conservé dans le navigateur ; l’authentification complète et un anti-triche avancé restent à développer.
+- Aucun paiement réel n’est activé.
+/**
+ * LE TERRITOIRE DE JECE — serveur multijoueur temps réel
+ * Node.js 18+ | Socket.IO | Génération de questions via OpenAI API
+ * IMPORTANT : gardez OPENAI_API_KEY uniquement dans les variables d'environnement du serveur.
+ */
+const express = require('express');
+const http = require('http');
+const path = require('path');
+const { Server } = require('socket.io');
+const { Pool } = require('pg');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: process.env.ALLOWED_ORIGIN || true }, maxHttpBufferSize: 1e6 });
+const PORT = process.env.PORT || 3000;
+const pool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false }, max: 10, idleTimeoutMillis: 30000 }) : null;
+let databaseReady = false;
+const localScores = new Map();
+const QUESTION_SECONDS = 20;
+const QUESTIONS_PER_ROUND = 20;
+const MIN_PLAYERS = 2;
+const ROUND_PAUSE_MS = 6500;
+const CATEGORIES = [
+  'Football','Basket-ball','Musique','Culture générale','Brain Test','Logique','Énigmes',
+  'Mathématiques – Géométrie','Mathématiques – Problèmes','Avant et après – Nombres','Avant et après – Heures',
+  'Cuisine','Linge et entretien','Paroles de films','Dessins animés','Manga','Kilomètres et distances',
+  'Écrivains','Philosophie','Objets','Marques de voitures et motos','Marques de téléphones','Tennis','Boxe',
+  'Jeux olympiques','Cinéma et acteurs','Séries télévisées','Célébrités','Danse','Humour et blagues','Histoire',
+  'Géographie et pays','Capitales du monde','Langues et traductions','Littérature','Sciences et découvertes',
+  'Informatique et technologie','Animaux et espèces','Nature et environnement','Corps humain','Métiers et professions',
+  'Inventions','Mythologie','Drapeaux du monde','Économie et entreprises','Calcul mental','Français et orthographe',
+  'Culture africaine','RDC et Afrique centrale','Religion et textes anciens'
+];
+const rooms = new Map();
+const fallbackQuestions = [
+  {category:'Culture générale',question:'Quel est le plus grand océan de la Terre ?',options:['Atlantique','Indien','Pacifique','Arctique'],correctIndex:2,explanation:'Le Pacifique est le plus vaste océan.'},
+  {category:'Mathématiques – Problèmes',question:'Combien font 17 × 6 ?',options:['92','102','112','96'],correctIndex:1,explanation:'17 × 6 = 102.'},
+  {category:'Capitales du monde',question:'Quelle est la capitale du Rwanda ?',options:['Bujumbura','Kigali','Kampala','Dodoma'],correctIndex:1,explanation:'Kigali est la capitale du Rwanda.'},
+  {category:'Sciences et découvertes',question:'Quel gaz les plantes absorbent-elles principalement pour la photosynthèse ?',options:['Oxygène','Azote','Dioxyde de carbone','Hélium'],correctIndex:2,explanation:'Les plantes utilisent le dioxyde de carbone durant la photosynthèse.'},
+  {category:'Manga',question:'Dans Naruto, quel est le nom du village où Naruto a grandi ?',options:['Suna','Konoha','Kiri','Iwa'],correctIndex:1,explanation:'Naruto a grandi à Konoha, le village caché de la Feuille.'},
+  {category:'Animaux et espèces',question:'Quel est le seul groupe de mammifères capable de vol actif ?',options:['Les écureuils volants','Les chauves-souris','Les lémuriens','Les colugos'],correctIndex:1,explanation:'Les chauves-souris sont les seuls mammifères capables de vol actif.'},
+  {category:'Histoire',question:'En quelle année l’Organisation des Nations unies a-t-elle été fondée ?',options:['1919','1939','1945','1955'],correctIndex:2,explanation:'L’ONU a été fondée en 1945.'},
+  {category:'Logique',question:'Tous les Nors sont des Vels. Aucun Vel n’est un Taren. Un Nor peut-il être un Taren ?',options:['Oui, toujours','Oui, parfois','Non','Impossible à savoir'],correctIndex:2,explanation:'Puisque tout Nor est Vel et qu’aucun Vel n’est Taren, aucun Nor ne peut être Taren.'},
+  {category:'Football',question:'Combien de joueurs d’une équipe de football sont sur le terrain au début d’un match, gardien compris ?',options:['9','10','11','12'],correctIndex:2,explanation:'Une équipe de football aligne 11 joueurs.'},
+  {category:'Géographie et pays',question:'Quel fleuve traverse Kinshasa et Brazzaville ?',options:['Le Nil','Le Congo','Le Niger','Le Zambèze'],correctIndex:1,explanation:'Les deux capitales se font face de part et d’autre du fleuve Congo.'}
+];
+
+app.use(express.static(__dirname));
+app.get('/health', (_req, res) => res.json({ok:true,rooms:rooms.size,aiEnabled:Boolean(process.env.OPENAI_API_KEY),databaseEnabled:databaseReady,categories:CATEGORIES.length,questionsPerRound:QUESTIONS_PER_ROUND,questionSeconds:QUESTION_SECONDS,minimumPlayers:MIN_PLAYERS}));
+app.get('/api/leaderboard', async (req, res) => {
+  try { res.json({type:req.query.type==='daily'?'daily':'general',players:await getLeaderboard(req.query.type==='daily'?'daily':'general'),persistent:databaseReady}); }
+  catch (e) { console.error('Classement:',e.message); res.status(500).json({error:'Classement temporairement indisponible.'}); }
+});
+async function initDatabase() {
+  if (!pool) return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS tj_players (
+    player_id TEXT PRIMARY KEY, name TEXT NOT NULL, total_points BIGINT NOT NULL DEFAULT 0,
+    daily_points BIGINT NOT NULL DEFAULT 0, daily_date DATE, correct_answers BIGINT NOT NULL DEFAULT 0,
+    games_played BIGINT NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS tj_questions (fingerprint TEXT PRIMARY KEY, category TEXT NOT NULL, question TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+  databaseReady = true;
+  console.log('Base PostgreSQL connectée.');
+}
+async function ensurePlayer(uid, name) {
+  if (!uid) return;
+  const safeName = cleanName(name);
+  if (databaseReady) await pool.query(`INSERT INTO tj_players(player_id,name) VALUES($1,$2) ON CONFLICT(player_id) DO UPDATE SET name=EXCLUDED.name, updated_at=NOW()`, [uid,safeName]);
+  else { const p=localScores.get(uid)||{player_id:uid,name:safeName,total_points:0,daily_points:0,correct_answers:0}; p.name=safeName; localScores.set(uid,p); }
+}
+async function recordScore(uid, name, points, correctDelta=0) {
+  if (!uid || !Number.isFinite(points) || points <= 0) return;
+  const safeName=cleanName(name), amount=Math.floor(points);
+  if (databaseReady) {
+    await pool.query(`INSERT INTO tj_players(player_id,name,total_points,daily_points,daily_date,correct_answers)
+      VALUES($1,$2,$3,$3,(NOW() AT TIME ZONE 'Africa/Kinshasa')::date,$4)
+      ON CONFLICT(player_id) DO UPDATE SET name=EXCLUDED.name,total_points=tj_players.total_points+$3,
+      daily_points=CASE WHEN tj_players.daily_date=(NOW() AT TIME ZONE 'Africa/Kinshasa')::date THEN tj_players.daily_points+$3 ELSE $3 END,
+      daily_date=(NOW() AT TIME ZONE 'Africa/Kinshasa')::date,correct_answers=tj_players.correct_answers+$4,updated_at=NOW()`,[uid,safeName,amount,correctDelta]);
+  } else {
+    const p=localScores.get(uid)||{player_id:uid,name:safeName,total_points:0,daily_points:0,correct_answers:0};
+    const today=new Date().toLocaleDateString('en-CA',{timeZone:'Africa/Kinshasa'});
+    if(p.daily_date!==today){p.daily_points=0;p.daily_date=today;} p.name=safeName;p.total_points+=amount;p.daily_points+=amount;p.correct_answers+=correctDelta;localScores.set(uid,p);
+  }
+  await broadcastLeaderboards();
+}
+async function recordCorrect(uid, name, points) { return recordScore(uid,name,points,1); }
+
+async function getLeaderboard(type='general') {
+  if (databaseReady) {
+    const field=type==='daily'?'daily_points':'total_points';
+    const result=await pool.query(`SELECT player_id AS id,name,${field} AS score,correct_answers FROM tj_players WHERE ${field}>0 ORDER BY ${field} DESC, updated_at ASC LIMIT 100`);
+    return result.rows.map((p,i)=>({...p,rank:i+1,score:Number(p.score),correct_answers:Number(p.correct_answers)}));
+  }
+  return [...localScores.values()].filter(p=>(type==='daily'?p.daily_points:p.total_points)>0).sort((a,b)=>(type==='daily'?b.daily_points-a.daily_points:b.total_points-a.total_points)).slice(0,100).map((p,i)=>({id:p.player_id,name:p.name,score:type==='daily'?p.daily_points:p.total_points,rank:i+1,correct_answers:p.correct_answers}));
+}
+async function broadcastLeaderboards() {
+  const [general,daily]=await Promise.all([getLeaderboard('general'),getLeaderboard('daily')]);
+  io.emit('global-leaderboards',{general,daily,updatedAt:Date.now(),persistent:databaseReady});
+}
+async function reserveQuestion(q) {
+  if (!databaseReady) return true;
+  const fingerprint=norm(q.question);
+  try { await pool.query('INSERT INTO tj_questions(fingerprint,category,question) VALUES($1,$2,$3)',[fingerprint,q.category,q.question]); return true; }
+  catch (e) { if(e.code==='23505') return false; throw e; }
+}
+
+function cleanPlayerId(value) { const id=String(value||'').trim().slice(0,80); return /^[a-zA-Z0-9_-]{8,80}$/.test(id)?id:null; }
+function cleanName(value) {
+  return String(value || 'Joueur').replace(/[<>\u0000-\u001f]/g, '').trim().slice(0, 24) || 'Joueur';
+}
+function roomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code;
+  do { code = Array.from({length:5}, () => chars[Math.floor(Math.random()*chars.length)]).join(''); } while (rooms.has(code));
+  return code;
+}
+function publicState(room) {
+  return {
+    code: room.code, category: room.category, status: room.status, roundNumber: room.roundNumber||0, questionNumber: room.questionNumber, totalQuestions: QUESTIONS_PER_ROUND, roundWinner:room.roundWinner||null,
+    question: room.current ? {category:room.current.category,question:room.current.question,options:room.current.options,endsAt:room.endsAt} : null,
+    players: [...room.players.values()].map(p => ({id:p.id,name:p.name,score:p.score,answered:p.answered})).sort((a,b)=>b.score-a.score),
+    answerCount: [...room.players.values()].filter(p=>p.answered).length,
+    playerCount: room.players.size
+  };
+}
+function broadcast(room) { io.to(room.code).emit('room-state', publicState(room)); }
+function norm(s) { return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,''); }
+
+async function generateQuestion(room) {
+  const requested = [room.category];
+  if (process.env.OPENAI_API_KEY) {
+    for (let attempt=0; attempt<3; attempt++) {
+      const category = requested[Math.floor(Math.random()*requested.length)];
+      const recent = room.used.slice(-30);
+      let globalRecent=[];
+      if(databaseReady){const history=await pool.query('SELECT question FROM tj_questions ORDER BY created_at DESC LIMIT 80');globalRecent=history.rows.map(x=>x.question);}
+      const prompt = `Tu es l'auteur expert de questions pour un jeu de quiz francophone. Génère UNE question originale, exacte, vérifiable et adaptée à un public général, catégorie: ${category}. Choisis aléatoirement une difficulté parmi facile, moyenne, difficile et experte. Mélange ces niveaux au fil des questions. Évite absolument ces questions déjà utilisées (empreintes locales): ${JSON.stringify(recent)}. N'utilise pas une question identique à celles-ci (questions déjà générées globalement): ${JSON.stringify(globalRecent)}. Crée 4 réponses courtes, une seule correcte. Évite les faits très récents, controversés ou ambigus. Pour les maths/logique, vérifie le résultat. Retourne uniquement un objet JSON avec les clés category, question, options (4 chaînes), correctIndex (0 à 3), explanation (une phrase).`;
+      try {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method:'POST', headers:{'Authorization':`Bearer ${process.env.OPENAI_API_KEY}`,'Content-Type':'application/json'},
+          body:JSON.stringify({model:process.env.OPENAI_MODEL || 'gpt-4o-mini',temperature:0.9,response_format:{type:'json_object'},messages:[{role:'system',content:'Réponds en français. Ne donne que du JSON valide.'},{role:'user',content:prompt}]})
+        });
+        if (!response.ok) throw new Error(`API IA (${response.status})`);
+        const data = await response.json();
+        const q = JSON.parse(data.choices?.[0]?.message?.content || '{}');
+        if (typeof q.question !== 'string' || !Array.isArray(q.options) || q.options.length!==4 || !Number.isInteger(q.correctIndex) || q.correctIndex<0 || q.correctIndex>3) continue;
+        q.category = requested.includes(q.category) ? q.category : category;
+        q.options = q.options.map(x=>String(x).slice(0,180));
+        q.question = q.question.slice(0,500); q.explanation = String(q.explanation || 'Bonne réponse.').slice(0,500);
+        const fingerprint = norm(q.question);
+        if (room.used.includes(fingerprint)) continue;
+        if (!(await reserveQuestion(q))) continue;
+        room.used.push(fingerprint); if(room.used.length>5000) room.used.shift();
+        return q;
+      } catch (err) { console.error('Génération IA:', err.message); break; }
+    }
+  }
+  if (process.env.OPENAI_API_KEY) throw new Error('La génération IA a échoué après plusieurs tentatives.');
+  // Banque de secours réservée aux tests unitaires ; elle ne suffit pas pour une manche complète.
+  const available = fallbackQuestions.filter(q => !room.used.includes(norm(q.question)) && q.category===room.category);
+  if (!available.length) throw new Error('Pas de question de secours disponible pour cette catégorie. Configure OPENAI_API_KEY pour activer les 50 catégories.');
+  const q = {...available[Math.floor(Math.random()*available.length)]};
+  room.used.push(norm(q.question));
+  if(room.used.length>5000) room.used.shift();
+  return q;
+}
+
+function chooseRoundCategory(previous='') {
+  const available = process.env.OPENAI_API_KEY ? CATEGORIES : [...new Set(fallbackQuestions.map(q=>q.category))];
+  const choices = available.filter(c=>c!==previous);
+  return (choices.length ? choices : available)[Math.floor(Math.random()*(choices.length ? choices : available).length)];
+}
+function funnyLine(p, correct) {
+  if (!correct) return ['Même Google vient de demander sa démission ! 😭','Le démon du doute a pris possession de ton cerveau ! 😈','Aïe… cette réponse est partie en vacances sans toi ! 😂'][Math.floor(Math.random()*3)];
+  if (p.elapsedSeconds < 5) return 'ALERTE ! RINEDI FLASH est dans l’arène ! ⚡🤣';
+  if (p.elapsedSeconds < 15) return 'Bien joué ! Tes neurones sont enfin connectés ! 🧠🔥';
+  return 'Bonne réponse ! La vitesse n’était pas au rendez-vous, mais le cerveau a fait le travail ! 😂';
+}
+async function startRound(room) {
+  if (!rooms.has(room.code) || room.players.size < MIN_PLAYERS) { room.status='lobby'; broadcast(room); return; }
+  if (!process.env.OPENAI_API_KEY) { room.status='lobby'; io.to(room.code).emit('room-error','Pour lancer des manches complètes de 20 questions parmi les 50 catégories, configure OPENAI_API_KEY côté serveur. La banque de secours actuelle ne contient pas encore 20 questions par catégorie.'); broadcast(room); return; }
+  clearTimeout(room.timer);
+  room.roundNumber = (room.roundNumber || 0) + 1;
+  room.questionNumber = 0;
+  room.previousCategory = room.category;
+  room.category = chooseRoundCategory(room.previousCategory);
+  room.roundWinner = null;
+  for (const p of room.players.values()) {
+    p.score=0; p.correctCount=0; p.fastUnder15=0; p.fastUnder17=0; p.correctElapsedTotal=0; p.answered=false; p.lastAnswer=null;
+  }
+  io.to(room.code).emit('round-start',{round:room.roundNumber,category:room.category,totalQuestions:QUESTIONS_PER_ROUND,message:'Nouvelle manche ! Le Territoire a choisi une catégorie…'});
+  await sendNextQuestion(room);
+}
+async function sendNextQuestion(room) {
+  if (!rooms.has(room.code) || room.players.size < MIN_PLAYERS) { room.status='lobby'; broadcast(room); return; }
+  if (!process.env.OPENAI_API_KEY) { room.status='lobby'; io.to(room.code).emit('room-error','Pour lancer des manches complètes de 20 questions parmi les 50 catégories, configure OPENAI_API_KEY côté serveur. La banque de secours actuelle ne contient pas encore 20 questions par catégorie.'); broadcast(room); return; }
+  clearTimeout(room.timer); room.status='loading'; room.current=null; broadcast(room);
+  try { room.current = await generateQuestion(room); }
+  catch (e) {
+    console.error('Question indisponible:',e.message);
+    const availableCats=[...new Set(fallbackQuestions.map(q=>q.category))];
+    const fallback=fallbackQuestions.find(q=>!room.used.includes(norm(q.question)) && availableCats.includes(room.category));
+    if (!fallback) { room.status='lobby'; room.current=null; io.to(room.code).emit('room-error','La génération des questions a échoué ou la banque de secours est épuisée. Vérifie OPENAI_API_KEY et les quotas, puis reconnecte la salle.'); broadcast(room); return; }
+    room.current={...fallback}; room.used.push(norm(fallback.question));
+  }
+  room.questionNumber++;
+  room.status='playing'; room.questionStartedAt=Date.now(); room.endsAt=room.questionStartedAt+QUESTION_SECONDS*1000;
+  for (const p of room.players.values()) { p.answered=false; p.lastAnswer=null; p.elapsedSeconds=null; p.lastAward=0; }
+  io.to(room.code).emit('new-question', {round:room.roundNumber,number:room.questionNumber,total:QUESTIONS_PER_ROUND,seconds:QUESTION_SECONDS,category:room.category,question:room.current.question,options:room.current.options,endsAt:room.endsAt});
+  broadcast(room);
+  room.timer=setTimeout(()=>finishQuestion(room), QUESTION_SECONDS*1000);
+}
+async function finishRound(room) {
+  room.status='round-result';
+  const players=[...room.players.values()];
+  for (const p of players) {
+    let bonus=0;
+    if (p.fastUnder15>=10) bonus=Math.max(bonus,20);
+    else if (p.fastUnder17>=10) bonus=Math.max(bonus,30);
+    if (p.correctCount===QUESTIONS_PER_ROUND) bonus+=50;
+    if (bonus>0) { p.score+=bonus; p.roundBonus=bonus; await recordScore(p.uid,p.name,bonus,0).catch(e=>console.error('Bonus non sauvegardé:',e.message)); }
+    else p.roundBonus=0;
+  }
+  players.sort((a,b)=>b.score-a.score || a.correctElapsedTotal-b.correctElapsedTotal || a.name.localeCompare(b.name));
+  const winner=players[0] || null; room.roundWinner=winner ? {id:winner.id,name:winner.name,score:winner.score} : null;
+  io.to(room.code).emit('round-result',{round:room.roundNumber,category:room.category,winner:room.roundWinner,standings:players.map(p=>({id:p.id,name:p.name,score:p.score,correctCount:p.correctCount,roundBonus:p.roundBonus||0,correctElapsedTotal:p.correctElapsedTotal})),nextRoundIn:Math.ceil(ROUND_PAUSE_MS/1000)});
+  broadcast(room);
+  room.timer=setTimeout(()=>startRound(room),ROUND_PAUSE_MS);
+}
+async function finishQuestion(room) {
+  if (!room || room.status!=='playing' || !room.current) return;
+  clearTimeout(room.timer); room.status='review';
+  const q=room.current;
+  io.to(room.code).emit('question-result',{round:room.roundNumber,number:room.questionNumber,total:QUESTIONS_PER_ROUND,correctIndex:q.correctIndex,explanation:q.explanation,correctAnswer:q.options[q.correctIndex],standings:publicState(room).players});
+  broadcast(room);
+  if (room.questionNumber >= QUESTIONS_PER_ROUND) { room.timer=setTimeout(()=>finishRound(room),1800); }
+  else { room.timer=setTimeout(()=>sendNextQuestion(room),2500); }
+}
+
+io.on('connection', socket => {
+  socket.on('create-room', async ({name,category,playerId}={}) => {
+    const code=roomCode();
+    const room={code,category:'Aléatoire',previousCategory:'',status:'lobby',roundNumber:0,questionNumber:0,current:null,endsAt:0,players:new Map(),used:[],timer:null,host:socket.id};
+    const uid=cleanPlayerId(playerId);
+    room.players.set(socket.id,{id:socket.id,uid,name:cleanName(name),score:0,correctCount:0,fastUnder15:0,fastUnder17:0,correctElapsedTotal:0,answered:false,lastAnswer:null});
+    ensurePlayer(uid,name).then(broadcastLeaderboards).catch(e=>console.error('Profil:',e.message));
+    rooms.set(code,room); socket.join(code); socket.data.roomCode=code;
+    socket.emit('room-created',{code,host:true}); broadcast(room);
+  });
+  socket.on('join-room', ({name,code,playerId}={}) => {
+    code=String(code||'').trim().toUpperCase(); const room=rooms.get(code);
+    if(!room){socket.emit('room-error','Code introuvable. Vérifie le code de la salle.');return;}
+    if(room.players.size>=50){socket.emit('room-error','Cette salle a atteint 50 joueurs.');return;}
+    if(room.status!=='lobby' && room.status!=='playing' && room.status!=='loading'){socket.emit('room-error','Cette partie est en train de se terminer.');return;}
+    const uid=cleanPlayerId(playerId);
+    room.players.set(socket.id,{id:socket.id,uid,name:cleanName(name),score:0,correctCount:0,fastUnder15:0,fastUnder17:0,correctElapsedTotal:0,answered:false,lastAnswer:null});
+    ensurePlayer(uid,name).then(broadcastLeaderboards).catch(e=>console.error('Profil:',e.message));
+    socket.join(code); socket.data.roomCode=code; socket.emit('room-joined',{code,host:room.host===socket.id}); broadcast(room);
+    if(room.status==='lobby' && room.players.size>=MIN_PLAYERS) { startRound(room).catch(e=>console.error('Départ manche:',e.message)); }
+    if(room.status==='playing' && room.current) socket.emit('new-question',{round:room.roundNumber,number:room.questionNumber,total:QUESTIONS_PER_ROUND,seconds:Math.max(1,Math.ceil((room.endsAt-Date.now())/1000)),category:room.category,question:room.current.question,options:room.current.options,endsAt:room.endsAt});
+  });
+  socket.on('start-game', () => { socket.emit('room-error','Le départ est automatique dès que 2 joueurs sont présents.'); });
+  socket.on('submit-answer', ({index}={}) => {
+    const room=rooms.get(socket.data.roomCode); if(!room || room.status!=='playing' || !room.current) return;
+    const p=room.players.get(socket.id); if(!p || p.answered || Date.now()>room.endsAt) return;
+    const choice=Number(index); if(!Number.isInteger(choice) || choice<0 || choice>3) return;
+    const elapsed=Math.max(1,Math.min(20,Math.ceil((Date.now()-room.questionStartedAt)/1000)));
+    p.answered=true; p.lastAnswer=choice; p.elapsedSeconds=elapsed; p.lastAward=0;
+    const correct=choice===room.current.correctIndex;
+    if(correct) {
+      const timingBonus = elapsed>=17 ? 10 : (elapsed>=15 ? 5 : 0);
+      p.lastAward=elapsed+timingBonus; p.score+=p.lastAward; p.correctCount++; p.correctElapsedTotal+=elapsed;
+      if(elapsed<15)p.fastUnder15++;
+      if(elapsed<17)p.fastUnder17++;
+      recordCorrect(p.uid,p.name,p.lastAward).catch(e=>console.error('Sauvegarde du score:',e.message));
+    }
+    socket.emit('answer-ack',{correct,correctIndex:room.current.correctIndex,elapsedSeconds:elapsed,basePoints:correct?elapsed:0,speedBonus:correct?(elapsed>=17?10:(elapsed>=15?5:0)):0,points:p.lastAward,funnyLine:funnyLine(p,correct)});
+    broadcast(room);
+    if([...room.players.values()].every(x=>x.answered)) finishQuestion(room);
+  });
+  socket.on('leave-room',()=>leaveRoom(socket));
+  socket.on('disconnect',()=>leaveRoom(socket));
+});
+function leaveRoom(socket){
+  const code=socket.data.roomCode; if(!code)return;
+  const room=rooms.get(code); socket.data.roomCode=null;
+  if(!room)return;
+  room.players.delete(socket.id); socket.leave(code);
+  if(room.host===socket.id){room.host=room.players.keys().next().value;io.to(code).emit('host-changed',room.host);}
+  if(room.players.size===0){clearTimeout(room.timer);rooms.delete(code);}else broadcast(room);
+}
+
+async function boot() {
+  if (pool) { try { await initDatabase(); } catch(e) { databaseReady=false; console.error('Base de données non disponible:',e.message); } }
+  server.listen(PORT,'0.0.0.0',()=>console.log(`Le Territoire de Jece actif sur le port ${PORT}. IA: ${process.env.OPENAI_API_KEY?'activée':'désactivée (questions de secours limitées)'}. Base: ${databaseReady?'PostgreSQL':'mémoire locale uniquement'}`));
+}
+boot();
