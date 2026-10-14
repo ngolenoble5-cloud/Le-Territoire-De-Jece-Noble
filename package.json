@@ -1,0 +1,19 @@
+{
+  "name": "le-territoire-de-jece-multijoueur",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Arène multijoueur temps réel, 50 catégories, 20 questions par manche et classement persistant",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check multiplayer-client.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1",
+    "pg": "^8.13.1"
+  }
+}

@@ -1,0 +1,52 @@
+LE TERRITOIRE DE JECE NOBLE — V3
+Guide d’installation
+
+1. PRÉREQUIS
+- Node.js 18 ou supérieur
+- Projet PostgreSQL (par exemple Supabase) pour conserver les scores
+- Clé API OpenAI pour générer des questions dans les 50 catégories
+
+2. CONFIGURER LE SERVEUR
+À la racine du dossier, lance :
+  npm install
+  npm start
+
+Variables d’environnement nécessaires :
+- OPENAI_API_KEY : clé secrète pour la génération des questions
+- OPENAI_MODEL : optionnel, valeur recommandée gpt-4o-mini
+- DATABASE_URL : URL de connexion PostgreSQL
+- PGSSL : mettre `disable` uniquement si ton hébergeur n’exige pas SSL
+
+Ne place jamais ces clés dans index.html, multiplayer-client.js ou un dépôt public.
+
+3. DÉPLOIEMENT
+Le dépôt GitHub Pages sert uniquement les fichiers statiques. Pour le multijoueur en direct, déploie le dossier sur un hébergeur Node.js prenant en charge Socket.IO/WebSockets (Render par exemple). Dans Render : Build `npm install`, Start `npm start`, health check `/health`. Ajoute OPENAI_API_KEY et DATABASE_URL dans les variables secrètes du service.
+
+4. TESTS APRÈS DÉPLOIEMENT
+Ouvre /health sur l’URL du serveur. La réponse indique :
+- ok : serveur actif
+- aiEnabled : clé IA détectée
+- databaseEnabled : base de données prête
+- categories : nombre de catégories (attendu : 50)
+- questionsPerRound : 20
+- questionSeconds : 20
+- minimumPlayers : 2
+
+5. LANCER UNE PARTIE
+- Tous les joueurs ouvrent la même URL du service déployé.
+- Un joueur saisit son pseudo et crée une salle.
+- Il partage le code à 5 caractères.
+- Dès que le deuxième joueur rejoint, la manche démarre automatiquement.
+- La catégorie est tirée au hasard et la même question est affichée pour toute la salle.
+- Après 20 questions, le vainqueur est annoncé ; la manche suivante démarre automatiquement après une courte pause.
+
+6. RÈGLES DE POINTS
+Chaque bonne réponse rapporte le nombre de secondes écoulées au moment de la validation, plafonné à 20, avec +5 entre la 15e et avant la 17e seconde, ou +10 de la 17e à la 20e seconde. Une mauvaise réponse ou une absence de réponse rapporte 0. À la fin de la manche : +20 si au moins 10 bonnes réponses ont été données en moins de 15 secondes chacune ; sinon +30 si au moins 10 ont été données en moins de 17 secondes chacune ; +50 pour 20 bonnes réponses sur 20. Les deux bonus de rapidité ne se cumulent pas entre eux, mais le bonus parfait s’ajoute. En cas d’égalité de score, le joueur dont le temps cumulé de réponse correcte est le plus faible gagne.
+
+7. LIMITES À CE STADE
+- Cette V3 est un paquet de code préparé, pas une preuve de déploiement.
+- Sans OPENAI_API_KEY, le jeu ne lance pas de manche complète de 20 questions : la petite banque de secours n’est pas encore suffisante pour toutes les catégories.
+- La persistance exige une base PostgreSQL active.
+- Les questions IA doivent être contrôlées ; l’IA peut produire une erreur.
+- L’identifiant est conservé dans le navigateur ; l’authentification complète et un anti-triche avancé restent à développer.
+- Aucun paiement réel n’est activé.

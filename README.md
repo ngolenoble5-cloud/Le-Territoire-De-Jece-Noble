@@ -1,57 +1,37 @@
-# Le-Territoire-De-Jece-Noble
-: Le Territoire de Jece — jeu de quiz
-♛ LE TERRITOIRE DE JECE 🪙
+# Le Territoire De Jece Noble — V3 (construction)
 
-Le Territoire de Jece, ce n’est pas un simple jeu de questions-réponses. C’est un univers de compétition où la culture, l’intelligence, la rapidité et la stratégie permettent à chaque joueur de construire sa légende.
+Jeu de quiz francophone en arène multijoueur, interface rouge/noir, serveur Node.js + Socket.IO et classements globaux.
 
-Imaginé par Jece Noble, Maître du jeu, le projet a pour ambition de réunir une communauté de joueurs autour d’une arène où chaque bonne réponse peut changer le classement.
+## Règles implémentées dans cette version
+- 50 catégories officielles ; une catégorie est tirée au hasard à chaque manche.
+- Départ automatique dès que 2 joueurs sont présents dans une salle.
+- 20 questions par manche, 20 secondes par question, quatre réponses A/B/C/D.
+- Points de base = seconde écoulée (ex. réponse correcte à la 18e seconde = 18 points). Bonus par réponse correcte : +5 entre la 15e et avant la 17e seconde ; +10 de la 17e à la 20e seconde. Mauvaise réponse ou absence de réponse = 0.
+- Bonus de manche : +20 si au moins 10 bonnes réponses ont été données en moins de 15 s chacune ; sinon +30 si au moins 10 ont été données en moins de 17 s chacune ; +50 pour 20/20. Les deux bonus de série rapide ne se cumulent pas entre eux ; le bonus parfait s'ajoute.
+- Vainqueur de manche : meilleur score ; en cas d'égalité, temps cumulé le plus faible sur les bonnes réponses.
+- Proclamation du vainqueur, pause de 6,5 s, puis nouvelle manche automatique.
+- Classements général et quotidien ; persistance des scores via PostgreSQL.
+- Voix de l'animateur activable/désactivable dans le navigateur.
 
-⚔️ Les grandes fonctionnalités
+## Dépendances indispensables
+Node.js 18+ et une base PostgreSQL pour sauvegarder durablement les scores. Configure côté serveur `OPENAI_API_KEY` pour la génération des questions dans les 50 catégories et `DATABASE_URL` pour les classements persistants. Sans clé IA, le serveur refuse de démarrer une manche complète : la banque de secours n'est pas encore assez grande pour 20 questions uniques dans chaque catégorie.
 
-1. L’Arène des Élites
+## Démarrage local
+```bash
+npm install
+npm start
+```
+Puis ouvre `http://localhost:3000`. Vérifie la configuration sur `http://localhost:3000/health`.
 
-Les joueurs s’affrontent sur des questions de culture générale, logique, mathématiques, histoire, géographie, pays et capitales, anime, sport, musique, sciences et bien d’autres catégories.
+## Déploiement Render
+Le fichier `render.yaml` contient le service Node. Ajoute les variables secrètes `OPENAI_API_KEY` et `DATABASE_URL` dans le tableau de bord Render. GitHub Pages seul ne peut pas exécuter le serveur Node/Socket.IO.
 
-Chaque manche met leurs connaissances à l’épreuve.
+## Fichiers
+- `index.html` : interface du jeu
+- `multiplayer-client.js` : interface de l'arène en direct
+- `server.js` : règles, chronomètre, calcul des scores, questions IA, classements
+- `render.yaml` : configuration d'hébergement
+- `INSTALLATION.txt` : étapes de configuration
 
-2. Les classements en direct
-
-L’objectif est que tous les joueurs puissent suivre les scores et voir qui domine l’arène, qui progresse et qui risque de perdre sa place.
-
-3. La boutique et les pouvoirs
-
-Les joueurs pourront utiliser des ressources du jeu pour débloquer des protections, des compétences et des pouvoirs stratégiques. Les pièces ne doivent pas acheter directement les points du classement.
-
-4. Les boss et les événements spéciaux
-
-Des épreuves plus difficiles, des défis collectifs et des affrontements exceptionnels permettront aux meilleurs de prouver leur valeur.
-
-5. Le Mur des légendes
-
-Les meilleurs joueurs pourront laisser leur nom dans l’histoire du jeu grâce aux trophées, aux saisons et aux performances remarquables.
-
-🧠 Comment se déroule une partie ?
-
-* Le joueur entre dans l’arène avec son pseudo.
-* Il rejoint une salle ou participe à un événement.
-* Une question apparaît, avec un temps limité pour répondre.
-* Sa réponse modifie son score selon les règles du jeu.
-* Le classement se met à jour et la compétition continue.
-
-L’ambition est de proposer des questions renouvelées par l’IA, afin de pouvoir jouer longtemps sans revoir constamment les mêmes questions.
-
-👑 L’esprit du Territoire
-
-* Intelligence : connaître, comprendre et raisonner.
-* Rapidité : répondre avant ses adversaires.
-* Stratégie : utiliser intelligemment ses pouvoirs.
-* Persévérance : progresser même après une défaite.
-* Gloire : gagner sa place parmi les légendes.
-
-Le jeu vise aussi à développer une communauté active, avec des salles privées, des clans, des missions quotidiennes, des saisons et des récompenses.
-
-Un point important sur l’état actuel
-
-Le projet est en cours de préparation technique. Le multijoueur réellement synchronisé, les questions IA en continu et les classements persistants nécessitent encore un serveur hébergé, une base de données et des tests en conditions réelles. Je ne veux donc pas te faire croire que toutes ces fonctions sont déjà opérationnelles.
-
-Le but final : que chaque joueur puisse ouvrir Le Territoire de Jece, défier ses amis, gagner des points, suivre son évolution et se battre pour devenir une véritable légende de l’arène. ♛
+## Statut honnête
+Cette archive contient les modifications V3 préparées et les vérifications syntaxiques JavaScript. Elle n'a pas été déployée sur Render ni reliée automatiquement à GitHub ; la connexion PostgreSQL, la clé IA, les tests multijoueurs en ligne et la publication restent à effectuer.
